@@ -14,138 +14,137 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
-
 #define CHUNK_SIZE 4096
+#define ALPHA 0.1
 
-#ifdef USE_CUSTOM_LIB
-#define OPEN(path, flags, mode) lab2_open(path)
-#define CLOSE(fd) lab2_close(fd)
-#define READ(fd, buf, count) lab2_read(fd, buf, count)
-#define WRITE(fd, buf, count) lab2_write(fd, buf, count)
-#define LSEEK(fd, offset, whence) lab2_lseek(fd, offset, whence)
-#define FSYNC(fd) lab2_fsync(fd)
-#else
-#define OPEN(path, flags, mode) open(path, flags, mode)
-#define CLOSE(fd) close(fd)
-#define READ(fd, buf, count) read(fd, buf, count)
-#define WRITE(fd, buf, count) write(fd, buf, count)
-#define LSEEK(fd, offset, whence) lseek(fd, offset, whence)
-#define FSYNC(fd) fsync(fd)
-#endif
-
-int count_in_file(const char *file_name, int target) {
-    int fd = open(file_name, O_RDONLY);
-    if (fd < 0) {
-        perror("Error opening file");
-        return 0;
-    }
-
-    char buffer[CHUNK_SIZE];
-    int res = 0;
-
-    while (1) {
-        ssize_t bytes_read = read(fd, buffer, CHUNK_SIZE);
-        if (bytes_read < 0) {
-            perror("Error reading file");
-            close(fd);
-            return 0;
-        }
-        if (bytes_read == 0) {
-            break;
-        }
-
-        for (size_t i = 0; i + sizeof(int) <= (size_t)bytes_read;
-             i += sizeof(int)) {
-            int val;
-            memcpy(&val, &buffer[i], sizeof(int));
-            if (val == target) {
-                res++;
-            }
-        }
-    }
-
-    close(fd);
-    return res;
+// Экспоненциальное скользящее среднее
+double ema(double previous, double current, double alpha) {
+    return alpha * current + (1.0 - alpha) * previous;
 }
 
-int replace_in_file(const char *file_name, int target, int replacement) {
-    int fd = OPEN(file_name, O_RDWR | O_DIRECT, 0644);
-    if (fd < 0) {
-        perror("Error opening file");
-        return 0;
-    }
-
-    char buffer[CHUNK_SIZE];
-    int replaced = 0;
-
-    while (1) {
-        ssize_t bytes_read = READ(fd, buffer, CHUNK_SIZE);
-        if (bytes_read < 0) {
-            perror("Error reading file");
-            CLOSE(fd);
-            return 0;
-        }
-        if (bytes_read == 0) {
-            break;
-        }
-
-        for (size_t i = 0; i < (size_t)bytes_read; i += sizeof(int)) {
-            if (bytes_read - i >= (ssize_t)sizeof(int)) {
-                int value;
-                memcpy(&value, &buffer[i], sizeof(int));
-                if (value == target) {
-                    memcpy(&buffer[i], &replacement, sizeof(int));
-                    replaced = 1;
-                }
-            }
-        }
-
-        LSEEK(fd, -bytes_read, SEEK_CUR);
-        ssize_t bytes_written = WRITE(fd, buffer, bytes_read);
-        if (bytes_written < 0) {
-            perror("Error writing to file");
-            CLOSE(fd);
-            return 0;
-        }
-    }
-
-    CLOSE(fd);
-    return replaced;
-}
-
-void generate_file(const char *filename, size_t file_size_mb, int seed) {
-    size_t total_bytes = file_size_mb * 1024 * 1024;
-    int buffer[CHUNK_SIZE / sizeof(int)];
-
+// Инициализация тестовых данных
+void init_data(DataPoint *data, size_t size, int seed) {
     srand(seed);
-
-    int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        perror("Error opening file");
-        exit(EXIT_FAILURE);
+    
+    for (size_t i = 0; i < size; i++) {
+        data[i].timestamp = (double)i;
+        data[i].value = (double)rand() / RAND_MAX * 100.0;
+        data[i].id = rand() % 1000;
     }
+}
 
-    size_t bytes_written = 0;
-    while (bytes_written < total_bytes) {
-        size_t to_write = total_bytes - bytes_written < sizeof(buffer)
-                              ? total_bytes - bytes_written
-                              : sizeof(buffer);
-
-        size_t num_ints_to_write = to_write / sizeof(int);
-        for (size_t i = 0; i < num_ints_to_write; ++i) {
-            buffer[i] = rand() % 100;
+// JOIN операция (имитация SQL JOIN)
+void perform_join(JoinData *join_data) {
+    double sum = 0.0;
+    int match_count = 0;
+    
+    // "JOIN" по полю id - находим совпадающие записи
+    for (size_t i = 0; i < join_data->size; i++) {
+        for (size_t j = 0; j < join_data->size; j++) {
+            if (join_data->data1[i].id == join_data->data2[j].id) {
+                double product = join_data->data1[i].value * join_data->data2[j].value;
+                sum += product;
+                match_count++;
+                
+                
+            }
         }
-
-        ssize_t written = write(fd, buffer, to_write);
-        if (written < 0) {
-            perror("Error writing to file");
-            close(fd);
-            exit(EXIT_FAILURE);
-        }
-        bytes_written += written;
     }
+    
+    join_data->join_result = (match_count > 0) ? sum / match_count : 0.0;
+}
 
-    printf("File %s of size %zu MB successfully generated.\n", filename,
-           file_size_mb);
-    close(fd);
+// Основная функция EMA-JOIN вычислений
+double perform_ema_join_calculation(int iterations, size_t data_size, const char *log_file) {
+    printf("Allocating memory for %zu data points...\n", data_size);
+    
+    // Выделяем память для данных
+    DataPoint *data1 = malloc(data_size * sizeof(DataPoint));
+    DataPoint *data2 = malloc(data_size * sizeof(DataPoint));
+    
+    if (!data1 || !data2) {
+        fprintf(stderr, "Memory allocation failed!\n");
+        return 0.0;
+    }
+    
+    // Инициализируем данные
+    printf("Initializing test data...\n");
+    init_data(data1, data_size, 1);
+    init_data(data2, data_size, 2);
+    
+    JoinData join_data = {
+        .data1 = data1,
+        .data2 = data2,
+        .size = data_size,
+        .join_result = 0.0
+    };
+    
+    double ema_result = 0.0;
+    
+    printf("Starting %d EMA-JOIN iterations...\n", iterations);
+    
+    // Основной цикл вычислений
+    for (int i = 0; i < iterations; i++) {
+       
+        // Выполняем JOIN операцию
+        perform_join(&join_data);
+        
+        // Применяем EMA к результату JOIN
+        ema_result = ema(ema_result, join_data.join_result, ALPHA);
+        
+        // Прогресс для длительных вычислений
+        if (iterations > 100 && i % (iterations / 10) == 0) {
+            printf("Progress: %d%%, Current EMA: %f\n", 
+                   (i * 100) / iterations, ema_result);
+            
+            // Логируем промежуточные результаты
+            int fd = open(log_file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd >= 0) {
+                char buffer[128];
+                int len = snprintf(buffer, sizeof(buffer),
+                                  "Iteration %d: EMA=%f, JOIN=%f\n",
+                                  i, ema_result, join_data.join_result);
+                write(fd, buffer, len);
+                close(fd);
+            }
+        }
+    }
+    
+    printf("Final EMA result: %f\n", ema_result);
+    printf("Final JOIN result: %f\n", join_data.join_result);
+    
+    // Сохраняем финальные результаты
+    int fd = open(log_file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        char buffer[128];
+        int len = snprintf(buffer, sizeof(buffer),
+                          "FINAL: EMA=%f, JOIN=%f\n",
+                          ema_result, join_data.join_result);
+        write(fd, buffer, len);
+        close(fd);
+    }
+    
+    free(data1);
+    free(data2);
+    
+    return ema_result;
+}
+
+// Сохранение результатов в файл
+void save_results_to_file(const char *filename, double result, double time) {
+    int fd = open(filename, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        char buffer[128];
+        int len = snprintf(buffer, sizeof(buffer),
+                          "Result: %f, Time: %f sec\n", result, time);
+        write(fd, buffer, len);
+        close(fd);
+    }
+}
+
+// Загрузка данных из файла (заглушка для совместимости)
+void load_data_from_file(const char *filename, DataPoint *data, size_t size) {
+    // В этой версии данные генерируются, а не загружаются из файла
+    printf("Generating data instead of loading from file...\n");
+    init_data(data, size, time(NULL));
 }
