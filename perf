@@ -1,0 +1,6 @@
+	perf stat -e \
+	cpu-cycles,instructions,cache-references,cache-misses,\
+	page-faults,minor-faults,major-faults,\
+	L1-dcache-loads,L1-dcache-load-misses,L1-dcache-stores,\
+	LLC-loads,LLC-load-misses,\
+	dTLB-loads,dTLB-load-misses
